@@ -2,6 +2,17 @@
 
 ## Unreleased
 
+- Allow editing the export directory directly from TUI write confirmation;
+  returning from the editor keeps Cancel selected and refreshes the summary.
+
+- Added bounded custom find/replace with literal search, optional Go regex and
+  Unicode case-insensitive matching, literal replacements and deletion.
+- Added the replace CLI command with dry-run, JSON/JSONL, stdin/stdout, exports,
+  in-place backups and restore; replacement output expansion is budgeted.
+- Added a TUI find/replace form, current-file/all-file scope and explicit mode
+  labels. Safe previews mask source and resulting privacy spans without changing
+  the selected replacement output.
+
 - Redesigned the TUI as a responsive workspace with file navigation, finding
   selection, scan counters and a scrollable fully sanitized preview.
 - Added pane focus, combined live search and rule filters, file-scoped selection,

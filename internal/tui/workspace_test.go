@@ -178,6 +178,91 @@ func TestConfirmDefaultsToCancelAndScrollsDestination(t *testing.T) {
 	}
 }
 
+func TestEditExportDirectoryInsideConfirmation(t *testing.T) {
+	m := fixture(t)
+	m.write.Output = "out-typo"
+	m = key(m, 'w')
+	m = press(m, tea.KeyTab) // execute had focus before editing
+	m = key(m, 'd')
+	if !m.confirm || m.confirmWrite || m.inputMode != "output" || !m.input.Focused() || m.input.Value() != "out-typo" {
+		t.Fatal("confirmation did not open a focused directory editor")
+	}
+	m = press(m, tea.KeyEnd)
+	for i := 0; i < 4; i++ {
+		m = press(m, tea.KeyBackspace)
+	}
+	for _, r := range "fixed" {
+		m = key(m, r)
+	}
+	if m.input.Value() != "out-fixed" || m.write.Output != "out-typo" {
+		t.Fatal("draft modified destination before commit")
+	}
+	next, cmd := m.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
+	m = next.(Model)
+	if cmd != nil || m.state != "review" || !m.confirm || m.confirmWrite || m.inputMode != "" || m.write.Output != "out-fixed" {
+		t.Fatal("editing wrote files or did not return to cancel")
+	}
+	if !strings.Contains(m.confirmation.GetContent(), "out-fixed") || strings.Contains(m.confirmation.GetContent(), "out-typo") {
+		t.Fatal("confirmation shows stale destination")
+	}
+	m = press(m, tea.KeyEnter)
+	if m.state != "review" || m.confirm {
+		t.Fatal("default enter after editing performed a write")
+	}
+}
+
+func TestCancelDirectoryEditAndRejectEmptyPath(t *testing.T) {
+	m := fixture(t)
+	m.write.Output = "original-copy"
+	m = key(m, 'w')
+	m = press(m, tea.KeyTab)
+	m = key(m, 'd')
+	m.input.SetValue("")
+	m = press(m, tea.KeyEnter)
+	if m.inputMode != "output" || m.write.Output != "original-copy" || m.confirmWrite || !strings.Contains(ansi.Strip(m.modal()), "路径不能为空") {
+		t.Fatal("empty directory accepted or invisible error")
+	}
+	m.input.SetValue("changed-draft")
+	m = press(m, tea.KeyEscape)
+	if !m.confirm || m.confirmWrite || m.inputMode != "" || m.write.Output != "original-copy" || !strings.Contains(m.confirmation.GetContent(), "original-copy") {
+		t.Fatal("cancel did not keep original destination and confirmation")
+	}
+	m.write.InPlace, m.write.Output, m.write.BackupDir = true, "", "backups"
+	m.prepareConfirmation()
+	m = key(m, 'd')
+	if m.inputMode != "" || !m.write.InPlace || m.write.BackupDir != "backups" {
+		t.Fatal("in-place mode changed unexpectedly")
+	}
+}
+
+func TestDirectoryEditControlsAtMinimumTerminalSize(t *testing.T) {
+	m := fixture(t)
+	next, _ := m.Update(tea.WindowSizeMsg{Width: 48, Height: 15})
+	m = next.(Model)
+	m = key(m, 'w')
+	if !strings.Contains(ansi.Strip(m.View().Content), "d 修改目录") {
+		t.Fatal("directory edit action hidden")
+	}
+	m = key(m, 'd')
+	m.input.SetValue("short-path")
+	m.input.CursorEnd()
+	view := m.View().Content
+	if !strings.Contains(ansi.Strip(view), "Esc 保留原目录") || !strings.Contains(ansi.Strip(view), "Backspace") {
+		t.Fatal("edit controls hidden")
+	}
+	if lipgloss.Width(m.input.View()) > 38 {
+		t.Fatal("input cursor exceeds dialog frame")
+	}
+	if lipgloss.Height(view) > 15 {
+		t.Fatal("editor exceeds height")
+	}
+	for _, line := range strings.Split(view, "\n") {
+		if lipgloss.Width(line) > 48 {
+			t.Fatal("editor exceeds width")
+		}
+	}
+}
+
 func TestPreviewMapsMultilineReplacementAndScrolls(t *testing.T) {
 	m := fixture(t)
 	data := []byte("intro\nsecret\nblock\nphone 13800138000\n" + strings.Repeat("ordinary text\n", 80))

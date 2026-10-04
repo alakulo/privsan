@@ -46,7 +46,12 @@ func (m *Model) resize() {
 	m.preview.SetHeight(max(1, previewHeight-y-2))
 	m.details.SetWidth(max(1, l.width-x))
 	m.details.SetHeight(max(1, l.bodyHeight-y-2))
-	m.input.SetWidth(max(1, min(64, l.width-8)-2))
+	// Both input width and cursor must fit inside the dialog's actual frame.
+	m.input.SetWidth(max(1, min(64, min(72, m.width-6)-x-3)))
+	for i := range m.replaceInputs {
+		// The input width excludes its two-cell prompt and one-cell cursor.
+		m.replaceInputs[i].SetWidth(max(1, min(72, m.width-6)-7))
+	}
 	dialogWidth := max(1, min(72, m.width-6))
 	dialogHeight := min(18, max(3, m.height-2))
 	m.confirmation.SetWidth(max(1, dialogWidth-x))

@@ -33,6 +33,47 @@ controls actual replacements: deselected values remain in the exported or
 modified file. Undetected sensitive information may remain; detection is an
 aid, not a complete security audit.
 
+## Custom replacement workspace
+
+Press `c` to open the **find / replace with** form. Type the search text, use
+`Tab` or `Shift+Tab` to move between fields, and enter the replacement. An empty
+replacement deletes matches. `Enter` submits the plan for an asynchronous scan;
+`Esc` cancels the draft without changing the current review.
+
+| Form key | Action |
+|---|---|
+| `Ctrl+R` | Toggle literal / Go regular expression search |
+| `Ctrl+G` | Toggle case-sensitive / Unicode case-insensitive search |
+| `Ctrl+S` | Toggle current file / all included files, when a file is available |
+| `Tab` / `Shift+Tab` | Switch input fields |
+| `Enter` / `Esc` | Preview the plan / cancel the draft |
+
+To replace in one file, focus **Files** with `f`, select that file and press `c`.
+From the all-files scope, the form defaults to all included files. The scope is
+shown before submission. All-files replacement follows include/exclude/ignore
+rules, independently of the review's path/rule filter. A new plan resets findings
+and selections; replacements are not chained onto an unwritten preview. Editing
+an existing plan retains its file scope unless another file is selected.
+
+The toolbar, counters and write confirmation identify **custom replacement**.
+Use `Space` / `a` to select replacements, `d` to set a new export directory and
+`w` to review the write summary. Dry-run and mandatory in-place backups still
+apply. `Ctrl+D` returns to privacy redaction and starts a fresh scan. Changing
+the input root with `o` resets the replacement file scope to all included files.
+
+The safe preview shows **all replacement candidates**, including deselected
+ones, and additionally masks privacy findings from both the source and the
+proposed result. A partial phone/email replacement therefore cannot reveal the
+rest of that identified value. Privacy preview masks are **not written** in
+custom replacement mode: only selected custom replacements affect output.
+The confirmation states this distinction. Review retained data before sharing.
+
+The TUI form accepts single-line text and rejects control-character or multiline
+pastes; use the CLI for actual newlines or tabs. Find and replacement are each
+limited to 4,096 UTF-8 bytes. Replacement is literal, including `$1` and `\n`.
+See the [CLI reference](CLI.md#custom-find-and-replace) for limits and CSV rules.
+The form adapts to the minimum 48 × 15 terminal size without hiding its controls.
+
 ## Filter
 
 `/` opens live search by path or rule ID. `Enter` keeps the search; `Esc` cancels
@@ -50,6 +91,13 @@ clear the filters.
 root. `w` opens the write summary, including selected and retained counts, input
 path, and export or backup directory. Long summaries scroll with navigation keys;
 the action buttons remain visible.
+
+If the export path is wrong, press `d` **inside the confirmation window** to
+edit it. Use arrows or `Home` / `End` to position the cursor and `Backspace` to
+delete text. `Enter` updates the directory and returns to the refreshed summary;
+`Esc` keeps the original directory and returns to confirmation. Both return with
+**Cancel** selected, so editing never executes a write. In-place confirmation
+does not offer this export-directory action.
 
 Confirmation starts on **Cancel**. `Tab` switches the action, `Enter` activates
 it, `y` executes explicitly, and `Esc` or `n` cancels. No write is allowed in

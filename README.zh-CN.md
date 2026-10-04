@@ -4,7 +4,7 @@
 
 ### 敏感数据留在本地，只分享你选择的内容。
 
-本地文件脱敏 CLI 与交互式终端工具。
+本地文件脱敏与自定义文本替换 CLI，配备交互式终端界面。
 
 [![License](https://img.shields.io/badge/license-MIT-2563EB?style=flat-square)](LICENSE)
 [![Go](https://img.shields.io/badge/Go-1.26.5%2B-00ADD8?style=flat-square&logo=go&logoColor=white)](go.mod)
@@ -37,6 +37,7 @@ contact=[EMAIL]           phone=[PHONE]     source=[IP]
 - **交互式审阅**：逐项选择，按文件或规则筛选，查看脱敏行预览。
 - **可恢复写入**：导出新目录，或使用经过校验的备份进行原地修改和恢复。
 - **Agent 友好**：JSON、JSONL、标准输入与输出；扫描不完整时不输出正文。
+- **自定义替换**：原文查找、可选正则与忽略大小写，支持单文件或批量替换、空值删除。
 - **可配置策略**：自定义 RE2 规则、规则开关、固定掩码、HMAC 稳定伪名。
 
 ## 快速开始
@@ -73,7 +74,7 @@ go build -trimpath -o privsan .
 .\privsan.exe tui .\documents
 ```
 
-![Privsan 终端审阅界面](images/ui.png)
+![Privsan TUI 操作演示](images/tui.gif)
 
 目录会递归扫描。省略子命令等同于 `scan`，省略路径则扫描当前目录。可用 `.privsanignore` 保存排除规则，语法独立于 `.gitignore`。
 
@@ -86,12 +87,16 @@ go build -trimpath -o privsan .
 | `a` | 全选或取消当前范围内的命中 |
 | `←` / `→`、`h` / `l` | 聚焦预览后水平滚动 |
 | `o` / `d` | 设置输入路径 / 导出目录 |
+| `f` / `Enter` | 聚焦文件面板 / 审阅选中文件的命中 |
+| `c` / `Ctrl+D` | 打开自定义替换表单 / 返回隐私脱敏 |
 | `w` | 审阅并确认执行 |
 | `e` / `?` / `q` | 查看结果与诊断 / 帮助 / 退出 |
 
 工作台提供文件导航、命中选择、可滚动的脱敏预览和扫描统计，适配窄窗口及终端明暗背景。预览始终屏蔽所有已识别值，包括未勾选项；勾选状态影响实际替换。
 
-最小终端大小为 48 列 × 15 行，推荐 120 × 30 或更大。范围选择、确认和取消操作见 [TUI 使用指南](docs/OPERATIONS.md#tui)。
+按 `w` 审阅写入摘要，默认选中**取消**；`Tab` 切换操作，`Enter` 确定，`y` 明确执行。导出目录输错时，可在**确认窗口内按 `d` 修改目录**，用方向键、`Home` / `End` 定位，`Backspace` 删除。`Enter` 更新目录并返回新的确认摘要，`Esc` 保留原目录；返回时都重新选中“取消”。`--dry-run` 始终禁止写入。
+
+最小终端大小为 48 列 × 15 行，推荐 120 × 30 或更大。范围选择、确认和取消操作见 [TUI 使用指南](docs/TUI.md)。
 
 ### 导出脱敏副本
 
@@ -114,6 +119,33 @@ go build -trimpath -o privsan .
 
 > [!NOTE]
 > 备份包含原始敏感内容，应保存在受控目录。批次按文件提交，不是整个目录的原子事务。`--dry-run` 可禁止全部写入。
+
+## 自定义查找替换
+
+```powershell
+.\privsan.exe replace --find '旧项目名称' --with '新项目名称' --dry-run .\documents
+.\privsan.exe replace --find '旧项目名称' --with '新项目名称' --output ..\replaced-copy .\documents
+
+# 可选正则与忽略大小写。
+.\privsan.exe replace --find 'build-[0-9]+' --with 'build-current' --regex --ignore-case --dry-run .\documents
+
+# 显式传入空替换值，删除命中的文本。
+.\privsan.exe replace --find '临时备注' --with= --dry-run .\notes.txt
+```
+
+TUI 按 `f` 选择文件，再按 `c` 打开“查找 / 替换为”表单，默认只处理该文件；从“全部文件”范围打开表单则默认批量处理。填写后按 `Enter` 生成预览，用空格逐项选择，`d` 设置新导出目录，`w` 审阅并确认写入。`Esc` 取消表单，不改变当前计划。
+
+| 表单按键 | 操作 |
+|:---|:---|
+| `Tab` / `Shift+Tab` | 切换查找与替换输入框 |
+| `Ctrl+S` | 切换当前文件 / 全部文件（有可用文件时） |
+| `Ctrl+R` | 切换原文 / Go 正则查找 |
+| `Ctrl+G` | 切换区分 / 忽略大小写 |
+| `Enter` / `Esc` | 生成预览 / 取消草稿 |
+
+主界面 `Ctrl+D` 返回隐私脱敏。提交新计划会重新生成命中并默认全选。默认按原文、区分大小写查找，可选 `--regex` / `--ignore-case`；替换值始终按字面量处理，不展开 `$1`，也不把 `\n` 转成换行。空替换值删除命中。TUI 接受单行输入，实际换行或制表符请使用 CLI。默认单文件 **16 MiB**、批次 **128 MiB**，替换扩张同样受限。
+
+**自定义替换不会自动脱敏。** TUI 预览展示全部替换候选，并隐藏已识别隐私；实际输出只执行选中的自定义替换，预览隐私掩码不会写入文件。`replace --content` / `--stdout` 仍可能保留敏感数据，Agent 脱敏流程应使用 `scan` / `redact`。[完整替换说明](docs/CLI.md#custom-find-and-replace)。
 
 ## AI Agent 接入
 
@@ -140,7 +172,7 @@ go build -trimpath -o privsan .
 | 身份证 | 18 位候选，可开启日期和校验位验证 | `[ID]` |
 | IP | 合法 IPv4 / IPv6，含 IPv6 zone 后缀 | `[IP]` |
 
-CSV 按文本处理，跨越分隔符、引号和换行的命中会报错。国际手机号、Unicode / 引号邮箱、Office / PDF、图片识别暂不在支持范围内。
+CSV 按文本处理，跨越分隔符、引号和换行的命中会报错；自定义替换也不能向 CSV 插入逗号、分号、引号或换行。国际手机号、Unicode / 引号邮箱、Office / PDF、图片识别暂不在支持范围内。
 
 ## 自定义规则
 
@@ -167,7 +199,7 @@ CSV 按文本处理，跨越分隔符、引号和换行的命中会报错。国�
 
 ## 隐私边界
 
-运行时没有上传、遥测、远程规则加载或联网激活。已识别的原始值不会进入报告和终端预览。
+运行时没有上传、遥测、远程规则加载或联网激活。元数据报告不包含匹配原文或自定义查找查询；终端内容预览隐藏已识别隐私。自定义替换的实际输出遵循上文的独立说明。
 
 未识别内容、文件名和路径仍可能敏感，脱敏不等于匿名化或合规认证。操作期间保持源目录静止；备份未加密。详细边界见 [安全说明](SECURITY.md)。
 
