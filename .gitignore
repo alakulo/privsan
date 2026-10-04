@@ -1,0 +1,85 @@
+# Local product planning and verification records (keep public user docs).
+/docs/PRODUCT.md
+/docs/ARCHITECTURE.md
+/docs/INTERFACES.md
+/docs/ACCEPTANCE.md
+/docs/internal/
+/docs/drafts/
+
+# Go binaries, builds, packages and local dependency installations.
+/privsan
+/privsan.exe
+/bin/
+/build/
+/dist/
+*.exe
+*.test
+*.out
+*.prof
+*.pprof
+/coverage
+/coverage/
+/coverage.out
+/coverage.html
+
+# Local inputs, reports, sanitized exports and plaintext backups.
+/.privsan/
+/.privsan-*
+**/.privsan-*
+/backups/
+/private-backups/
+/sanitized/
+/reports/
+/report.json
+/sanitized.json
+/output/
+/outputs/
+/logs/
+/private/
+/.local/
+/scratch/
+/tmp/
+/temp/
+/test-results/
+*.bak
+*.tmp
+
+# Local policies, environment variables and credentials.
+.env
+.env.*
+!.env.example
+/privsan.local.json
+/policy.local.json
+/policy.json
+/.privsanignore
+/secrets/
+/credentials/
+*.key
+*.pem
+*.p12
+*.pfx
+
+# Generated recovery runs and export completion markers, at any depth.
+**/run-????????T??????Z-*/
+**/.privsan-export.json
+
+# Local agent, editor and operating-system state.
+/.codex/
+/.claude/
+/.agents/
+/.idea/
+/.vscode/
+*.code-workspace
+*.swp
+*.swo
+*~
+.DS_Store
+Thumbs.db
+Desktop.ini
+
+# Python caches from development-only schema validation.
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.pytest_cache/

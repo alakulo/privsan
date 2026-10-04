@@ -1,0 +1,3 @@
+# Patterns are relative to this root and case-sensitive.
+**/generated/
+**/*.private.txt

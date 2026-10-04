@@ -1,0 +1,78 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Privsan report v2",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["version", "schema_version", "mode", "complete", "policy_id", "summary", "files", "issues"],
+  "properties": {
+    "version": {"type": "string"},
+    "schema_version": {"const": 2},
+    "mode": {"type": "string"},
+    "complete": {"type": "boolean"},
+    "policy_id": {"type": "string"},
+    "summary": {
+      "type": "object", "additionalProperties": false,
+      "required": ["scanned_files", "skipped_files", "bytes", "findings", "selected"],
+      "properties": {
+        "scanned_files": {"type": "integer", "minimum": 0},
+        "skipped_files": {"type": "object", "additionalProperties": {"type": "integer", "minimum": 0}},
+        "bytes": {"type": "integer", "minimum": 0},
+        "findings": {"type": "integer", "minimum": 0},
+        "selected": {"type": "integer", "minimum": 0}
+      }
+    },
+    "files": {"type": "array", "items": {"$ref": "#/$defs/file"}},
+    "issues": {"type": "array", "items": {"$ref": "#/$defs/issue"}},
+    "operation": {
+      "type": "object", "additionalProperties": false,
+      "required": ["kind", "complete", "changed_files", "issues"],
+      "properties": {
+        "kind": {"type": "string"},
+        "complete": {"type": "boolean"},
+        "changed_files": {"type": "integer", "minimum": 0},
+        "run_dir": {"type": "string"},
+        "issues": {"type": "array", "items": {"$ref": "#/$defs/issue"}}
+      }
+    }
+  },
+  "allOf": [{
+    "if": {"properties": {"complete": {"const": false}}},
+    "then": {"properties": {"files": {"items": {"not": {"required": ["content"]}}}}}
+  }],
+  "$defs": {
+    "issue": {
+      "type": "object", "additionalProperties": false,
+      "required": ["code", "severity", "message"],
+      "properties": {
+        "code": {"type": "string"},
+        "severity": {"enum": ["error", "warning"]},
+        "path": {"type": "string"},
+        "message": {"type": "string"}
+      }
+    },
+    "file": {
+      "type": "object", "additionalProperties": false,
+      "required": ["size", "findings"],
+      "properties": {
+        "path": {"type": "string"},
+        "size": {"type": "integer", "minimum": 0},
+        "content": {"type": "string"},
+        "findings": {"type": "array", "items": {"$ref": "#/$defs/finding"}}
+      }
+    },
+    "finding": {
+      "type": "object", "additionalProperties": false,
+      "required": ["id", "rule", "start_byte", "end_byte", "line", "column", "replacement", "selected"],
+      "properties": {
+        "id": {"type": "integer", "minimum": 1},
+        "rule": {"type": "string"},
+        "start_byte": {"type": "integer", "minimum": 0},
+        "end_byte": {"type": "integer", "minimum": 1},
+        "line": {"type": "integer", "minimum": 1},
+        "column": {"type": "integer", "minimum": 1},
+        "replacement": {"type": "string"},
+        "selected": {"type": "boolean"}
+      }
+    }
+  }
+}

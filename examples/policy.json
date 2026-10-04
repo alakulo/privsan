@@ -1,0 +1,19 @@
+{
+  "version": 1,
+  "disable": [],
+  "id_validation": "candidate",
+  "strategy": "placeholder",
+  "hmac_key_env": "PRIVSAN_HMAC_KEY",
+  "limits": {
+    "max_file_bytes": 16777216,
+    "max_total_bytes": 134217728,
+    "max_files": 10000,
+    "max_findings": 100000,
+    "workers": 4
+  },
+  "include": [],
+  "exclude": [],
+  "rules": [
+    {"id": "api_token", "pattern": "sk-[A-Za-z0-9]{12,}", "replacement": "[TOKEN]", "priority": 200}
+  ]
+}

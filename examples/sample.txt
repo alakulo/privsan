@@ -1,0 +1,7 @@
+Synthetic fixture for local validation. These values are examples.
+Contact: alice@example.com
+Phone: +86 138-0013-8000
+ID candidate: 110101199003071234
+IPv4 documentation address: 192.0.2.1
+IPv6 documentation address: 2001:db8::1
+Custom token: sk-example123456789
