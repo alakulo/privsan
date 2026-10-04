@@ -47,7 +47,7 @@ try {
         if ($LASTEXITCODE) { throw "Build failed: $target" }
         Copy-Item -LiteralPath README.md,README.zh-CN.md,LICENSE,NOTICE.md,SECURITY.md,CONTRIBUTING.md,CHANGELOG.md,privsan.example.json -Destination $folder
         # Curate public docs explicitly: ignored local specs must never be packaged.
-        $publicDocs = @('CLI.md','OPERATIONS.md','policy.schema.json','report.schema.json')
+        $publicDocs = @('CLI.md','TUI.md','OPERATIONS.md','policy.schema.json','report.schema.json')
         $publicDocsDir = Join-Path $folder 'docs'
         New-Item -ItemType Directory $publicDocsDir | Out-Null
         foreach ($document in $publicDocs) {

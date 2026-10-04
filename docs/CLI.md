@@ -19,6 +19,9 @@ privsan version [--json]
 
 scan never writes to source files. --dry-run disables writes in scan, redact and tui. redact --stdout accepts a single file or standard input and emits sanitized bytes. --stdin is also available for scan reports; it cannot be combined with filesystem writes.
 
+For interactive review, see the [TUI guide](TUI.md), including pane navigation,
+combined filters, file selection, sanitized previews and write confirmation.
+
 ## Scan options
 
 | Option | Purpose |

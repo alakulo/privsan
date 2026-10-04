@@ -1,0 +1,2 @@
+# Keep Go formatter checks consistent on Windows, macOS and Linux.
+*.go text eol=lf
