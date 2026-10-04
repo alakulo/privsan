@@ -1,6 +1,6 @@
 <div align="center">
 
-# Privsan
+<h1 align="center"><img src="images/privsan-logo.png" alt="Privsan" width="52" align="center" />&nbsp;Privsan</h1>
 
 ### Keep sensitive data local. Share only what you choose.
 
@@ -85,6 +85,8 @@ Directories are scanned recursively. No command means `scan`; no path means the 
 ```sh
 ./privsan tui ./documents
 ```
+
+![Privsan terminal review workspace](images/ui.png)
 
 | Key | Action |
 |:---|:---|

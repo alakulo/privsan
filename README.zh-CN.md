@@ -1,6 +1,6 @@
 <div align="center">
 
-# Privsan
+<h1 align="center"><img src="images/privsan-logo.png" alt="Privsan" width="52" align="center" />&nbsp;Privsan</h1>
 
 ### 敏感数据留在本地，只分享你选择的内容。
 
@@ -72,6 +72,8 @@ go build -trimpath -o privsan .
 .\privsan.exe scan --include '**/*.log' --exclude '**/generated/**' .\documents
 .\privsan.exe tui .\documents
 ```
+
+![Privsan 终端审阅界面](images/ui.png)
 
 目录会递归扫描。省略子命令等同于 `scan`，省略路径则扫描当前目录。可用 `.privsanignore` 保存排除规则，语法独立于 `.gitignore`。
 
