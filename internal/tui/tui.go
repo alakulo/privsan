@@ -1,15 +1,23 @@
+// Package tui presents the offline scan/review/write workflow. Commands own I/O;
+// Update owns state; View only renders sanitized, bounded terminal content.
 package tui
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 	"io"
+	"sort"
 	"strconv"
 	"strings"
-	"unicode/utf8"
+	"unicode"
 
+	"charm.land/bubbles/v2/help"
+	"charm.land/bubbles/v2/progress"
+	"charm.land/bubbles/v2/spinner"
+	"charm.land/bubbles/v2/textinput"
+	"charm.land/bubbles/v2/viewport"
 	tea "charm.land/bubbletea/v2"
-	"github.com/charmbracelet/x/ansi"
 	"privsan/internal/model"
 	"privsan/internal/scan"
 	"privsan/internal/workflow"
@@ -18,29 +26,76 @@ import (
 type row struct{ file, hit int }
 type scanDone struct{ snapshot model.Snapshot }
 type writeDone struct{ operation model.Operation }
-type progressMsg scan.Progress
+type progressMsg struct {
+	progress scan.Progress
+	source   <-chan scan.Progress
+}
 type progressClosed struct{}
 type externalCancel struct{}
+type startMsg struct{}
+
+type focus int
+
+const (
+	focusFiles focus = iota
+	focusFindings
+	focusPreview
+)
+
+type totals struct {
+	findings, selected, selectedFiles, skipped int
+	perFile, chosenPerFile                     []int
+	byRule                                     map[string]int
+}
+
 type Model struct {
-	parent                           context.Context
-	cancel                           context.CancelFunc
-	service                          workflow.Service
-	options                          scan.Options
-	write                            workflow.WriteOptions
-	snapshot                         model.Snapshot
-	operation                        model.Operation
-	rows                             []row
-	cursor, width, height            int
-	state                            string
-	progress                         scan.Progress
-	events                           chan scan.Progress
-	inputMode, input, filter, status string
-	confirm, showErrors, quitting    bool
+	parent                                                context.Context
+	cancel                                                context.CancelFunc
+	service                                               workflow.Service
+	options                                               scan.Options
+	write                                                 workflow.WriteOptions
+	snapshot                                              model.Snapshot
+	operation                                             model.Operation
+	rows                                                  []row
+	files                                                 []int
+	cursor, fileCursor, fileScope, width, height          int
+	focus                                                 focus
+	state                                                 string
+	progress                                              scan.Progress
+	events                                                chan scan.Progress
+	filter, ruleFilter, status                            string
+	rules                                                 []string
+	stats                                                 totals
+	inputMode, savedFilter                                string
+	input                                                 textinput.Model
+	confirm, confirmWrite, showErrors, showHelp, quitting bool
+	preview, details                                      viewport.Model
+	confirmation                                          viewport.Model
+	previewFile, previewHit, previewLine                  int
+	previewTargets                                        []int
+	spinner                                               spinner.Model
+	bar                                                   progress.Model
+	help                                                  help.Model
+	theme                                                 theme
 }
 
 func New(ctx context.Context, svc workflow.Service, opts scan.Options, w workflow.WriteOptions) Model {
-	return Model{parent: ctx, service: svc, options: opts, write: w, state: "idle", width: 100, height: 30}
+	m := Model{parent: ctx, service: svc, options: opts, write: w, state: "idle", width: 100, height: 30,
+		fileScope: -1, focus: focusFindings, previewFile: -1, previewHit: -1,
+		input: textinput.New(), preview: viewport.New(), details: viewport.New(), confirmation: viewport.New(),
+		spinner: spinner.New(spinner.WithSpinner(spinner.Dot)),
+		bar:     progress.New(progress.WithoutPercentage()), help: help.New()}
+	m.input.CharLimit = 1024
+	m.input.Prompt = "› "
+	m.input.SetVirtualCursor(true)
+	m.preview.SoftWrap = false
+	m.details.SoftWrap = true
+	m.confirmation.SoftWrap = true
+	m.setTheme(true)
+	m.resize()
+	return m
 }
+
 func Run(ctx context.Context, svc workflow.Service, opts scan.Options, w workflow.WriteOptions, in io.Reader, out io.Writer) (model.Snapshot, model.Operation, error) {
 	runCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
@@ -51,11 +106,11 @@ func Run(ctx context.Context, svc workflow.Service, opts scan.Options, w workflo
 	result := m.(Model)
 	return result.snapshot, result.operation, nil
 }
-func (m Model) Init() tea.Cmd {
-	return tea.Batch(func() tea.Msg { return startMsg{} }, func() tea.Msg { <-m.parent.Done(); return externalCancel{} })
-}
 
-type startMsg struct{}
+func (m Model) Init() tea.Cmd {
+	return tea.Batch(func() tea.Msg { return startMsg{} }, tea.RequestBackgroundColor,
+		func() tea.Msg { <-m.parent.Done(); return externalCancel{} })
+}
 
 func listen(ch <-chan scan.Progress) tea.Cmd {
 	return func() tea.Msg {
@@ -63,16 +118,21 @@ func listen(ch <-chan scan.Progress) tea.Cmd {
 		if !ok {
 			return progressClosed{}
 		}
-		return progressMsg(p)
+		return progressMsg{p, ch}
 	}
 }
+
 func (m Model) start() (tea.Model, tea.Cmd) {
 	ctx, cancel := context.WithCancel(m.parent)
 	m.cancel = cancel
-	m.state = "scanning"
-	m.status = "正在本地扫描…"
-	m.rows = nil
-	m.cursor = 0
+	m.state, m.status = "scanning", "正在本地扫描…"
+	m.rows, m.files = nil, nil
+	m.snapshot = model.Snapshot{}
+	m.stats = totals{}
+	m.cursor, m.fileCursor, m.fileScope = 0, 0, -1
+	m.previewFile, m.previewHit = -1, -1
+	m.preview.SetContent("")
+	m.showErrors, m.confirm, m.showHelp = false, false, false
 	m.progress = scan.Progress{}
 	m.operation = model.Operation{}
 	events := make(chan scan.Progress, 8)
@@ -87,219 +147,106 @@ func (m Model) start() (tea.Model, tea.Cmd) {
 			}
 		})
 		return scanDone{result}
-	}, listen(events))
+	}, listen(events), m.spinner.Tick)
 }
+
+func (m *Model) summarize() {
+	m.stats = totals{perFile: make([]int, len(m.snapshot.Files)), chosenPerFile: make([]int, len(m.snapshot.Files)), byRule: map[string]int{}}
+	for i, f := range m.snapshot.Files {
+		m.stats.perFile[i] = len(f.Findings)
+		for _, h := range f.Findings {
+			m.stats.findings++
+			m.stats.byRule[h.Rule]++
+			if h.Selected {
+				m.stats.selected++
+				m.stats.chosenPerFile[i]++
+			}
+		}
+		if m.stats.chosenPerFile[i] > 0 {
+			m.stats.selectedFiles++
+		}
+	}
+	for _, n := range m.snapshot.Skipped {
+		m.stats.skipped += n
+	}
+	m.rules = nil
+	for id := range m.stats.byRule {
+		m.rules = append(m.rules, id)
+	}
+	sort.Strings(m.rules)
+}
+
 func (m *Model) rebuild() {
-	m.rows = nil
+	m.summarize()
+	m.rows, m.files = nil, nil
+	var matching []row
 	needle := strings.ToLower(m.filter)
 	for i, f := range m.snapshot.Files {
+		pathMatch := needle == "" || strings.Contains(strings.ToLower(f.Path), needle)
+		fileMatch := pathMatch && m.ruleFilter == ""
 		for j, h := range f.Findings {
-			if needle == "" || strings.Contains(strings.ToLower(f.Path), needle) || strings.Contains(h.Rule, needle) {
-				m.rows = append(m.rows, row{i, j})
+			if (pathMatch || strings.Contains(strings.ToLower(h.Rule), needle)) && (m.ruleFilter == "" || h.Rule == m.ruleFilter) {
+				fileMatch = true
+				matching = append(matching, row{i, j})
 			}
+		}
+		if fileMatch {
+			m.files = append(m.files, i)
+		}
+	}
+	found := false
+	for i, f := range m.files {
+		if f == m.fileScope {
+			m.fileCursor, found = i+1, true
+			break
+		}
+	}
+	if !found {
+		m.fileScope, m.fileCursor = -1, 0
+	}
+	for _, r := range matching {
+		if m.fileScope < 0 || m.fileScope == r.file {
+			m.rows = append(m.rows, r)
 		}
 	}
 	m.cursor = min(max(m.cursor, 0), max(0, len(m.rows)-1))
+	m.syncPreview()
 }
-func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
-	switch msg := msg.(type) {
-	case externalCancel:
-		if m.cancel != nil {
-			m.cancel()
-		}
-		if m.state == "scanning" || m.state == "writing" {
-			m.quitting = true
-			m.status = "正在安全停止…"
-			return m, nil
-		}
-		return m, tea.Quit
-	case startMsg:
-		return m.start()
-	case tea.WindowSizeMsg:
-		m.width = msg.Width
-		m.height = msg.Height
-	case progressMsg:
-		m.progress = scan.Progress(msg)
-		if m.state == "scanning" {
-			return m, listen(m.events)
-		}
-	case scanDone:
-		if m.cancel != nil {
-			m.cancel()
-		}
-		m.snapshot = msg.snapshot
-		m.rebuild()
-		m.state = "review"
-		if m.snapshot.Complete {
-			m.status = "扫描完成。默认勾选所有命中；预览隐藏所有识别值。"
+
+func (m *Model) scopeFile() {
+	m.fileScope = -1
+	if m.fileCursor > 0 && m.fileCursor <= len(m.files) {
+		m.fileScope = m.files[m.fileCursor-1]
+	}
+	m.cursor = 0
+	m.rebuild()
+}
+
+// safeText escapes control sequences and bidi controls, retaining readable
+// Unicode. Never pass untrusted file content or paths directly to Lip Gloss.
+func safeText(s string) string {
+	var b strings.Builder
+	for _, r := range s {
+		if unicode.IsGraphic(r) {
+			b.WriteRune(r)
 		} else {
-			m.status = "扫描未完整成功，禁止写入。按 e 查看错误。"
-		}
-		if m.quitting {
-			return m, tea.Quit
-		}
-	case writeDone:
-		if m.cancel != nil {
-			m.cancel()
-		}
-		m.operation = msg.operation
-		m.state = "done"
-		if msg.operation.Complete {
-			m.status = fmt.Sprintf("完成：%d 个文件。按 e 查看操作与备份路径。", msg.operation.Changed)
-		} else {
-			m.status = "操作未完整成功。按 e 查看错误与恢复目录。"
-		}
-		if m.quitting {
-			return m, tea.Quit
-		}
-	case tea.KeyPressMsg:
-		key := msg.String()
-		if key == "ctrl+c" {
-			if m.cancel != nil {
-				m.cancel()
-			}
-			if m.state == "scanning" || m.state == "writing" {
-				m.quitting = true
-				m.status = "正在安全停止，等待当前文件完成…"
-				return m, nil
-			}
-			return m, tea.Quit
-		}
-		if m.state == "scanning" || m.state == "writing" {
-			if key == "q" || key == "esc" {
-				if m.cancel != nil {
-					m.cancel()
-				}
-				m.quitting = true
-				m.status = "取消中…"
-			}
-			return m, nil
-		}
-		if m.inputMode != "" {
-			switch key {
-			case "esc":
-				m.inputMode = ""
-				m.input = ""
-			case "backspace":
-				if len(m.input) > 0 {
-					_, n := utf8.DecodeLastRuneInString(m.input)
-					m.input = m.input[:len(m.input)-n]
-				}
-			case "enter":
-				mode, value := m.inputMode, m.input
-				m.inputMode = ""
-				m.input = ""
-				switch mode {
-				case "filter":
-					m.filter = value
-					m.cursor = 0
-					m.rebuild()
-				case "root":
-					if strings.TrimSpace(value) != "" {
-						m.options.Root = value
-						m.filter = ""
-						return m.start()
-					}
-				case "output":
-					if strings.TrimSpace(value) != "" {
-						m.write.Output = value
-						m.write.InPlace = false
-						m.write.BackupDir = ""
-						m.status = "导出目录已设置；按 w 审阅确认。"
-					}
-				}
-			default:
-				if len(m.input) < 1024 {
-					for _, r := range msg.Text {
-						if r >= 32 && r != 127 {
-							m.input += string(r)
-						}
-					}
-				}
-			}
-			return m, nil
-		}
-		if m.confirm {
-			m.confirm = false
-			if key == "y" {
-				ctx, cancel := context.WithCancel(m.parent)
-				m.cancel = cancel
-				m.state = "writing"
-				m.status = "正在校验、备份并写入…"
-				snapshot, svc, w := m.snapshot, m.service, m.write
-				return m, func() tea.Msg { return writeDone{svc.Write(ctx, &snapshot, w)} }
-			}
-			return m, nil
-		}
-		switch key {
-		case "q":
-			return m, tea.Quit
-		case "e":
-			m.showErrors = !m.showErrors
-		case "up", "k":
-			m.cursor = max(0, m.cursor-1)
-		case "down", "j":
-			m.cursor = min(max(0, len(m.rows)-1), m.cursor+1)
-		case "pgup":
-			m.cursor = max(0, m.cursor-max(1, m.height-17))
-		case "pgdown":
-			m.cursor = min(max(0, len(m.rows)-1), m.cursor+max(1, m.height-17))
-		case "home":
-			m.cursor = 0
-		case "end":
-			m.cursor = max(0, len(m.rows)-1)
-		case "/":
-			m.inputMode = "filter"
-			m.input = m.filter
-		case "esc":
-			m.filter = ""
-			m.rebuild()
-			m.showErrors = false
-		case "o":
-			m.inputMode = "root"
-			m.input = m.options.Root
-		case "d":
-			if m.state != "done" {
-				m.inputMode = "output"
-				m.input = m.write.Output
-			}
-		case "r":
-			return m.start()
-		case "space":
-			if m.state == "review" && len(m.rows) > 0 {
-				r := m.rows[m.cursor]
-				h := &m.snapshot.Files[r.file].Findings[r.hit]
-				h.Selected = !h.Selected
-			}
-		case "a":
-			if m.state == "review" {
-				all := true
-				for _, r := range m.rows {
-					if !m.snapshot.Files[r.file].Findings[r.hit].Selected {
-						all = false
-					}
-				}
-				for _, r := range m.rows {
-					m.snapshot.Files[r.file].Findings[r.hit].Selected = !all
-				}
-			}
-		case "w":
-			if m.state == "done" {
-				m.status = "本次操作已结束。按 r 重新扫描后再操作。"
-			} else if m.write.DryRun {
-				m.status = "dry-run 禁止写入。"
-			} else if !m.snapshot.Complete {
-				m.status = "请先解决扫描错误。"
-			} else if !m.write.InPlace && m.write.Output == "" {
-				m.inputMode = "output"
-				m.input = ""
-				m.status = "请输入新的导出目录，然后按 w 确认。"
-			} else {
-				m.confirm = true
-			}
+			q := strconv.QuoteRuneToGraphic(r)
+			b.WriteString(q[1 : len(q)-1])
 		}
 	}
-	return m, nil
+	return b.String()
+}
+
+func redactedOffset(f model.File, index int) int {
+	h := f.Findings[index]
+	offset := h.Start
+	for _, prior := range f.Findings {
+		if prior.Start >= h.Start {
+			break
+		}
+		offset += len(prior.Replacement) - (prior.End - prior.Start)
+	}
+	return offset
 }
 
 // PreviewLine maps original offsets into fully redacted text, including
@@ -312,14 +259,7 @@ func PreviewLine(f model.File, index int) string {
 	if err != nil {
 		return "[invalid preview]"
 	}
-	h := f.Findings[index]
-	offset := h.Start
-	for _, prior := range f.Findings {
-		if prior.Start >= h.Start {
-			break
-		}
-		offset += len(prior.Replacement) - (prior.End - prior.Start)
-	}
+	offset := redactedOffset(f, index)
 	if offset < 0 || offset > len(data) {
 		return "[invalid preview]"
 	}
@@ -332,96 +272,91 @@ func PreviewLine(f model.File, index int) string {
 	}
 	return strconv.Quote(string(data[start:end]))
 }
-func (m Model) View() tea.View {
-	if m.width < 48 || m.height < 15 {
-		v := tea.NewView("Privsan\n终端至少需要 48 列 × 15 行。\n请调整窗口大小；Ctrl+C 退出。")
-		v.AltScreen = true
-		return v
+
+// Caching occurs in Update, never in View. Changing selection cannot reveal
+// originals because the cache always renders every detected span.
+func (m *Model) syncPreview() {
+	file, hit := -1, -1
+	if len(m.rows) > 0 {
+		r := m.rows[m.cursor]
+		file, hit = r.file, r.hit
+	} else if m.fileScope >= 0 {
+		file = m.fileScope
 	}
-	var b strings.Builder
-	fmt.Fprintf(&b, "  PRIVSAN  %s  ·  本地隐私工作台\n", model.Version)
-	fmt.Fprintf(&b, "  路径 %s\n", strconv.Quote(m.options.Root))
-	mode := "导出副本"
-	if m.write.InPlace {
-		mode = "原地修改 + 强制备份"
+	if file < 0 || file >= len(m.snapshot.Files) {
+		m.previewFile, m.previewHit = -1, -1
+		m.preview.SetContent("")
+		return
 	}
-	if m.write.DryRun {
-		mode = "只读 dry-run"
-	}
-	fmt.Fprintf(&b, "  模式 %s  |  %s\n", mode, m.state)
-	if m.state == "scanning" {
-		fmt.Fprintf(&b, "\n  已扫描 %d / %d 文件，%d 项命中\n", m.progress.Completed, m.progress.Total, m.progress.Findings)
-	} else {
-		selected, total := 0, 0
-		for _, f := range m.snapshot.Files {
-			for _, h := range f.Findings {
-				total++
-				if h.Selected {
-					selected++
-				}
-			}
+	f := m.snapshot.Files[file]
+	if file != m.previewFile {
+		data, err := model.Render(f.Data, f.Findings, true)
+		if err != nil {
+			m.preview.SetContent("[invalid preview]")
+			return
 		}
-		fmt.Fprintf(&b, "  %d 文件 · %d 命中 · %d 已选 · 筛选 %q\n\n", len(m.snapshot.Files), total, selected, m.filter)
-		if m.showErrors {
-			if m.operation.RunDir != "" {
-				fmt.Fprintf(&b, "  操作目录 %q\n", m.operation.RunDir)
+		lines := strings.Split(string(data), "\n")
+		m.previewTargets = make([]int, len(f.Findings))
+		delta, previous, line := 0, 0, 0
+		for i, hit := range f.Findings {
+			offset := hit.Start + delta
+			if offset < previous || offset > len(data) {
+				m.preview.SetContent("[invalid preview]")
+				return
 			}
-			issues := append([]model.Issue{}, m.snapshot.Issues...)
-			issues = append(issues, m.operation.Issues...)
-			if len(issues) == 0 {
-				b.WriteString("  无错误。\n")
-			}
-			for i, v := range issues {
-				if i >= m.height-13 {
-					fmt.Fprintf(&b, "  … 另有 %d 条，退出后查看完整报告\n", len(issues)-i)
-					break
-				}
-				fmt.Fprintf(&b, "  %s %q: %s\n", v.Code, v.Path, v.Message)
-			}
-		} else {
-			size := max(1, m.height-16)
-			start := max(0, m.cursor-size/2)
-			end := min(len(m.rows), start+size)
-			if len(m.rows) == 0 {
-				b.WriteString("  当前范围没有命中。\n")
-			}
-			for i := start; i < end; i++ {
-				r := m.rows[i]
-				f := m.snapshot.Files[r.file]
-				h := f.Findings[r.hit]
-				pointer, check := " ", " "
-				if i == m.cursor {
-					pointer = "›"
-				}
-				if h.Selected {
-					check = "x"
-				}
-				fmt.Fprintf(&b, " %s [%s] %-8s %s:%d:%d\n", pointer, check, h.Rule, strconv.Quote(f.Path), h.Line, h.Column)
-			}
-			b.WriteString("\n  安全预览（包括未选项在内的所有命中均隐藏）：\n")
-			if len(m.rows) > 0 {
-				r := m.rows[m.cursor]
-				fmt.Fprintf(&b, "  %s\n", PreviewLine(m.snapshot.Files[r.file], r.hit))
-			}
+			line += bytes.Count(data[previous:offset], []byte{'\n'})
+			m.previewTargets[i] = line
+			previous = offset
+			delta += len(hit.Replacement) - (hit.End - hit.Start)
+		}
+		for i, s := range lines {
+			lines[i] = fmt.Sprintf("%4d │ %s", i+1, safeText(strings.ReplaceAll(strings.TrimSuffix(s, "\r"), "\t", "    ")))
+		}
+		m.preview.SetContentLines(lines)
+		m.preview.SetXOffset(0)
+		m.preview.GotoTop()
+	}
+	if file != m.previewFile || hit != m.previewHit {
+		m.previewLine = 0
+		if hit >= 0 && hit < len(m.previewTargets) {
+			m.previewLine = m.previewTargets[hit]
+		}
+		m.preview.SetYOffset(max(0, m.previewLine-m.preview.Height()/2))
+	}
+	m.previewFile, m.previewHit = file, hit
+	m.stylePreview()
+}
+
+func (m *Model) buildDetails() {
+	var lines []string
+	if m.operation.Kind != "" {
+		lines = append(lines, "操作: "+safeText(m.operation.Kind), fmt.Sprintf("已处理文件: %d", m.operation.Changed))
+		if m.operation.RunDir != "" {
+			lines = append(lines, "操作 / 恢复目录:", safeText(m.operation.RunDir))
+		}
+		if m.write.Output != "" {
+			lines = append(lines, "导出目录:", safeText(m.write.Output))
+		}
+		lines = append(lines, "")
+	}
+	issues := append(append([]model.Issue{}, m.snapshot.Issues...), m.operation.Issues...)
+	if len(issues) == 0 {
+		lines = append(lines, "✓ 无错误。")
+	}
+	for _, issue := range issues {
+		lines = append(lines, safeText(issue.Code)+"  "+safeText(issue.Path), "  "+safeText(issue.Message), "")
+	}
+	if len(m.snapshot.Skipped) > 0 {
+		lines = append(lines, "", "跳过文件（按原因统计）")
+		var keys []string
+		for k := range m.snapshot.Skipped {
+			keys = append(keys, k)
+		}
+		sort.Strings(keys)
+		for _, k := range keys {
+			lines = append(lines, fmt.Sprintf("  %s: %d", safeText(k), m.snapshot.Skipped[k]))
 		}
 	}
-	b.WriteString("\n  ↑↓/PgUp/PgDn 移动 · 空格 勾选 · a 当前筛选全选 · / 文件/规则筛选\n  o 输入路径 · d 导出目录 · r 重扫 · e 错误 · w 执行 · q 退出\n")
-	if m.inputMode != "" {
-		fmt.Fprintf(&b, "  输入 %s: %s▏  [Enter 确定 / Esc 取消]\n", m.inputMode, strconv.Quote(m.input))
-	} else if m.confirm {
-		target := m.write.Output
-		if m.write.InPlace {
-			target = m.write.BackupDir
-		}
-		fmt.Fprintf(&b, "  确认 %s？目录 %q  [y 执行 / 其他键取消]\n", mode, target)
-	} else {
-		fmt.Fprintf(&b, "  %s\n", m.status)
-	}
-	lines := strings.Split(b.String(), "\n")
-	for i := range lines {
-		lines[i] = ansi.Truncate(lines[i], m.width-1, "…")
-	}
-	v := tea.NewView(strings.Join(lines, "\n"))
-	v.AltScreen = true
-	return v
+	m.details.SetContent(strings.Join(lines, "\n"))
+	m.details.GotoTop()
 }
