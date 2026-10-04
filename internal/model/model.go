@@ -41,6 +41,9 @@ type File struct {
 	Digest   string
 	Info     os.FileInfo
 	Findings []Finding
+	// PreviewMasks refer to the fully replaced preview, never to source bytes.
+	PreviewMasks   []Finding
+	PreviewBlocked bool
 }
 type Snapshot struct {
 	Root     string
@@ -97,12 +100,19 @@ type ReportOptions struct {
 func Hash(data []byte) string { h := sha256.Sum256(data); return hex.EncodeToString(h[:]) }
 func Render(data []byte, findings []Finding, all bool) ([]byte, error) {
 	var b bytes.Buffer
-	pos, last := 0, 0
+	last, size := 0, len(data)
 	for _, f := range findings {
 		if f.Start < last || f.End <= f.Start || f.End > len(data) {
 			return nil, fmt.Errorf("invalid finding span")
 		}
 		last = f.End
+		if all || f.Selected {
+			size += len(f.Replacement) - (f.End - f.Start)
+		}
+	}
+	b.Grow(size)
+	pos := 0
+	for _, f := range findings {
 		if !all && !f.Selected {
 			continue
 		}

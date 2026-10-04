@@ -9,6 +9,10 @@ privsan scan [options] [root]
 privsan redact --output NEW_DIR [options] [root]
 privsan redact --in-place --backup-dir DIR [options] [root]
 privsan redact --stdout [--stdin | file] [--config FILE]
+privsan replace --find TEXT --with TEXT --dry-run [options] [root]
+privsan replace --find TEXT --with TEXT --output NEW_DIR [options] [root]
+privsan replace --find TEXT --with TEXT --in-place --backup-dir DIR [options] [root]
+privsan replace --find TEXT --with TEXT --stdout [--stdin | file]
 privsan tui [--output NEW_DIR | --in-place --backup-dir DIR] [options] [root]
 privsan restore --from BACKUP_RUN --root ORIGINAL_ROOT [--json]
 privsan config init [--output FILE]
@@ -17,7 +21,7 @@ privsan rules [--config FILE] [--json]
 privsan version [--json]
 ~~~
 
-scan never writes to source files. --dry-run disables writes in scan, redact and tui. redact --stdout accepts a single file or standard input and emits sanitized bytes. --stdin is also available for scan reports; it cannot be combined with filesystem writes.
+scan never writes to source files. --dry-run disables writes in scan, redact, replace and tui. redact --stdout accepts a single file or standard input and emits sanitized bytes. --stdin is also available for scan reports; it cannot be combined with filesystem writes.
 
 For interactive review, see the [TUI guide](TUI.md), including pane navigation,
 combined filters, file selection, sanitized previews and write confirmation.
@@ -46,6 +50,53 @@ combined filters, file selection, sanitized previews and write confirmation.
 Defaults: 16 MiB per file, 128 MiB per batch, 10,000 files, 100,000 findings and min(CPU count, 4) workers. Bounds are validated rather than silently clamped. Exceeding a budget makes the scan incomplete and prevents writes and content output.
 
 Directory traversal also has a max_files × 10 + 1,024 entry budget and a depth limit of 128. Candidate matches per file are limited to min(max_findings × 4, 2,000,000). The byte budget measures input, not total process memory.
+
+## Custom find and replace
+
+~~~sh
+# Preview locations and replacements without writing.
+privsan replace --find 'old project' --with 'new project' --dry-run ./documents
+
+# Export a new copy; sources remain unchanged.
+privsan replace --find 'old project' --with 'new project' --output ../renamed-copy ./documents
+
+# Delete matching text. --with= is an explicit empty replacement.
+privsan replace --find 'temporary note' --with= --dry-run ./notes.txt
+
+# Optional Go regular expressions and Unicode case-insensitive search.
+privsan replace --find 'build-[0-9]+' --with 'build-current' --regex --dry-run ./documents
+privsan replace --find 'old project' --with 'new project' --ignore-case --dry-run ./documents
+
+# Open the same plan for interactive selection.
+privsan tui --find 'old project' --with 'new project' ./documents
+~~~
+
+`replace` uses literal, case-sensitive text by default. Matches are left-to-right,
+non-overlapping and based on the original file, so replacements are not searched
+again. `--regex` uses Go's standard `regexp` syntax; `--ignore-case` also works
+with literal search. Replacement text is **always literal**: `$1` does not expand
+captures and `\n` does not become a newline. The CLI accepts actual newlines and
+tabs supplied by the caller. Empty queries and zero-width matches are rejected.
+Both search and replacement are limited to 4,096 UTF-8 bytes and cannot contain NUL.
+
+Provide both `--find` and `--with`. Choose `--dry-run`, a new `--output`,
+`--in-place --backup-dir`, or `--stdout`; there is no implicit write. JSON/JSONL,
+`--content`, `--hide-paths`, filtering, stdin, cancellation, backups and restore
+use the existing contracts. Reports use `rule: "replace"` and
+`policy_id: "replace-v1"`; queries are omitted and replacements remain metadata.
+
+The default 16 MiB per-file and 128 MiB batch limits also bound replacement
+expansion. Each positive expansion is reserved independently of shrinking
+matches, so any selection subset remains within budget. Over-budget scans are
+incomplete and cannot write or emit content. CSV replacements cannot cross or
+insert commas, semicolons, quotes or line endings; use a CSV editor for structural
+changes.
+
+**Custom replacement does not automatically redact sensitive data.** Its
+`--content` and `--stdout` contain the requested replacements and may retain
+phone numbers, emails or other private values. Use `scan` / `redact` for agent
+privacy workflows. Search text can itself be sensitive; CLI arguments may be
+visible in shell history or process listings.
 
 ## Filtering
 

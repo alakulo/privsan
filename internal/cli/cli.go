@@ -15,6 +15,7 @@ import (
 	"privsan/internal/detect"
 	"privsan/internal/model"
 	"privsan/internal/policy"
+	"privsan/internal/replace"
 	"privsan/internal/scan"
 	"privsan/internal/storage"
 	"privsan/internal/tui"
@@ -46,7 +47,7 @@ func Run(ctx context.Context, args []string, in io.Reader, out, stderr io.Writer
 	cmd := "scan"
 	if len(args) > 0 {
 		switch args[0] {
-		case "scan", "redact", "tui", "restore", "config", "rules":
+		case "scan", "redact", "replace", "tui", "restore", "config", "rules":
 			cmd = args[0]
 			args = args[1:]
 		}
@@ -79,6 +80,10 @@ func Run(ctx context.Context, args []string, in io.Reader, out, stderr io.Writer
 	maxFiles := fs.Int("max-files", -1, "maximum file count")
 	maxFindings := fs.Int("max-findings", -1, "maximum findings")
 	workers := fs.Int("workers", -1, "scan workers")
+	find := fs.String("find", "", "custom search text")
+	with := fs.String("with", "", "literal replacement; empty deletes matches")
+	regex := fs.Bool("regex", false, "use Go regular expression search")
+	ignoreCase := fs.Bool("ignore-case", false, "Unicode case-insensitive search")
 	var includes, excludes stringsFlag
 	fs.Var(&includes, "include", "include glob")
 	fs.Var(&excludes, "exclude", "exclude glob")
@@ -95,6 +100,29 @@ func Run(ctx context.Context, args []string, in io.Reader, out, stderr io.Writer
 	if len(fs.Args()) > 1 {
 		return usageError(st, "supply one file or directory root; put flags before paths")
 	}
+	findSet, withSet, searchFlags := false, false, false
+	fs.Visit(func(f *flag.Flag) {
+		switch f.Name {
+		case "find":
+			findSet, searchFlags = true, true
+		case "with":
+			withSet, searchFlags = true, true
+		case "regex", "ignore-case":
+			searchFlags = true
+		}
+	})
+	if searchFlags && cmd != "replace" && cmd != "tui" ||
+		(cmd == "replace" || searchFlags) && (!findSet || !withSet) {
+		return usageError(st, "replace requires --find and --with; search options are supported only by replace and tui")
+	}
+	var replacement *replace.Plan
+	if findSet {
+		var e error
+		replacement, e = replace.Compile(replace.Options{Find: *find, With: *with, Regex: *regex, IgnoreCase: *ignoreCase})
+		if e != nil {
+			return usageError(st, e.Error())
+		}
+	}
 	if *structured && *jsonl || *content && !(*structured || *jsonl) || *stdin && len(fs.Args()) > 0 {
 		return usageError(st, "conflicting output or input options")
 	}
@@ -109,11 +137,11 @@ func Run(ctx context.Context, args []string, in io.Reader, out, stderr io.Writer
 	if cmd == "tui" && (*structured || *jsonl || *stdin || *stdout || *content) {
 		return usageError(st, "TUI requires a terminal and does not support pipe/report flags")
 	}
-	if *stdout && (cmd != "redact" || hasWrite || *structured || *jsonl || *content || *dry) {
+	if *stdout && (cmd != "redact" && cmd != "replace" || hasWrite || *structured || *jsonl || *content || *dry) {
 		return usageError(st, "stdout mode excludes file writes, dry-run and reports")
 	}
-	if cmd == "redact" && !*dry && !hasWrite && !*stdout {
-		return usageError(st, "redact requires output, in-place with backup-dir, or stdout")
+	if (cmd == "redact" || cmd == "replace") && !*dry && !hasWrite && !*stdout {
+		return usageError(st, "redact/replace requires dry-run, output, in-place with backup-dir, or stdout")
 	}
 	if *stdin && (hasWrite || cmd == "tui") {
 		return usageError(st, "stdin cannot be used with filesystem writes or TUI")
@@ -144,7 +172,7 @@ func Run(ctx context.Context, args []string, in io.Reader, out, stderr io.Writer
 	if len(fs.Args()) == 1 {
 		root = fs.Args()[0]
 	}
-	opts := scan.Options{Root: root, Include: includes, Exclude: excludes, NoIgnore: *noignore}
+	opts := scan.Options{Root: root, Include: includes, Exclude: excludes, NoIgnore: *noignore, Replacement: replacement}
 	for _, g := range append(append(append(append([]string{}, c.Include...), c.Exclude...), includes...), excludes...) {
 		if _, err = scan.CompileGlob(g); err != nil {
 			return usageError(st, "invalid include/exclude glob")
@@ -171,7 +199,7 @@ func Run(ctx context.Context, args []string, in io.Reader, out, stderr io.Writer
 			return 1
 		}
 	} else if *stdin {
-		snapshot = readStdin(ctx, in, p)
+		snapshot = readStdin(ctx, in, p, replacement)
 	} else {
 		if *stdout {
 			info, e := os.Stat(root)
@@ -181,10 +209,13 @@ func Run(ctx context.Context, args []string, in io.Reader, out, stderr io.Writer
 		}
 		snapshot = svc.Scan(ctx, opts, nil)
 	}
-	if cmd == "redact" && !*stdout {
+	if (cmd == "redact" || cmd == "replace") && !*stdout {
 		op = svc.Write(ctx, &snapshot, writeOpts)
 	}
 	mode := cmd
+	if cmd == "tui" && snapshot.PolicyID == "replace-v1" {
+		mode = "replace"
+	}
 	if *dry {
 		mode = "dry-run"
 	}
@@ -217,7 +248,7 @@ func Run(ctx context.Context, args []string, in io.Reader, out, stderr io.Writer
 	}
 	return reportExit(ctx, report, *failFindings)
 }
-func readStdin(ctx context.Context, in io.Reader, p *policy.Policy) model.Snapshot {
+func readStdin(ctx context.Context, in io.Reader, p *policy.Policy, replacements ...*replace.Plan) model.Snapshot {
 	s := model.Snapshot{PolicyID: p.ID, Files: []model.File{}, Issues: []model.Issue{}, Skipped: map[string]int{}}
 	// A stalled producer must not prevent Ctrl+C from returning. The buffered
 	// channel lets an eventual read completion release its data after cancel.
@@ -253,10 +284,16 @@ func readStdin(ctx context.Context, in io.Reader, p *policy.Policy) model.Snapsh
 		s.Issues = append(s.Issues, model.Error(code, "<stdin>", msg))
 		return s
 	}
-	hits, err := detect.Find(ctx, data, p, p.Config.Limits.MaxFindings)
+	var hits []model.Finding
+	if len(replacements) > 0 && replacements[0] != nil {
+		s.PolicyID = "replace-v1"
+		hits, err = replacements[0].Find(ctx, data, p.Config.Limits.MaxFindings, p.Config.Limits.MaxFile)
+	} else {
+		hits, err = detect.Find(ctx, data, p, p.Config.Limits.MaxFindings)
+	}
 	if err != nil {
 		code = "E_RULE"
-		if err == detect.ErrLimit {
+		if err == detect.ErrLimit || err == replace.ErrLimit {
 			code = "E_LIMIT"
 		}
 		if ctx.Err() != nil {
@@ -481,6 +518,10 @@ Usage:
   privsan redact --output NEW_DIR [options] [root]
   privsan redact --in-place --backup-dir DIR [options] [root]
   privsan redact --stdout [--stdin | file]
+  privsan replace --find TEXT --with TEXT --dry-run [options] [root]
+  privsan replace --find TEXT --with TEXT --output NEW_DIR [options] [root]
+  privsan replace --find TEXT --with TEXT --in-place --backup-dir DIR [root]
+  privsan replace --find TEXT --with TEXT --stdout [--stdin | file]
   privsan tui [--output NEW_DIR | --in-place --backup-dir DIR] [root]
   privsan restore --from BACKUP_RUN --root ORIGINAL_ROOT [--json]
   privsan config init [--output FILE]
@@ -504,6 +545,14 @@ Scan options (put flags before the root path):
   --max-files N          File count budget (default 10000)
   --max-findings N       Finding budget (default 100000)
   --workers N           Concurrent readers (1..32)
+
+Custom replace (replace / tui):
+  --find TEXT           Nonempty search, at most 4096 UTF-8 bytes
+  --with TEXT           Literal replacement; explicit empty value deletes
+  --regex               Go regular expression; zero-width matches rejected
+  --ignore-case         Unicode case-insensitive matching
+Replacement is separate from privacy redaction; $1 and backslashes are literal.
+Output expansion is bounded by max-file and max-total, including partial selections.
 
 Default command: scan. Default root: current directory.
 In-place writes require backups; never modify a directory concurrently.

@@ -32,6 +32,9 @@ func (m *Model) setTheme(dark bool) {
 	s.Focused.Placeholder = lipgloss.NewStyle().Foreground(t.muted)
 	s.Cursor.Color, s.Cursor.Blink = t.mint, false
 	m.input.SetStyles(s)
+	for i := range m.replaceInputs {
+		m.replaceInputs[i].SetStyles(s)
+	}
 	m.help.Styles = help.DefaultStyles(dark)
 	m.help.Styles.ShortKey = lipgloss.NewStyle().Foreground(t.mint)
 	m.help.Styles.ShortDesc = lipgloss.NewStyle().Foreground(t.muted)
@@ -55,6 +58,7 @@ func binding(keys []string, label, description string) bkey.Binding {
 }
 
 var shortKeys = []bkey.Binding{
+	binding([]string{"c"}, "c", "替换"),
 	binding([]string{"tab"}, "tab", "切换面板"),
 	binding([]string{" "}, "space", "选择"),
 	binding([]string{"/"}, "/", "搜索"),

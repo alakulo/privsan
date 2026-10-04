@@ -33,6 +33,13 @@ for options in ([], ["--content"], ["--content", "--hide-paths"]):
 code, report = run("scan", "--stdin", "--json", "--content", "--max-file", "1", input=b"private")
 assert code == 1 and not report["complete"]
 report_validator.validate(report)
+code, replacement_report = run("replace", "--find", "old", "--with", "new", "--stdin", "--dry-run", "--json", "--content", input=b"old text")
+assert code == 0 and replacement_report["complete"]
+assert replacement_report["policy_id"] == "replace-v1" and replacement_report["files"][0]["content"] == "new text"
+report_validator.validate(replacement_report)
+code, replacement_report = run("replace", "--find", "x", "--with", "long", "--stdin", "--dry-run", "--json", "--content", "--max-file", "2", input=b"x")
+assert code == 1 and not replacement_report["complete"]
+report_validator.validate(replacement_report)
 report["files"] = [{"size": 1, "findings": [], "content": "must not exist"}]
 try:
     report_validator.validate(report)

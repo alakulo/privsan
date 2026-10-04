@@ -31,6 +31,12 @@ func (m Model) mode() string {
 	if m.write.DryRun {
 		return "DRY RUN · 只读"
 	}
+	if m.options.Replacement != nil {
+		if m.write.InPlace {
+			return "自定义替换 + 备份"
+		}
+		return "导出替换副本"
+	}
 	if m.write.InPlace {
 		return "原地脱敏 + 备份"
 	}
@@ -75,6 +81,9 @@ func (m Model) counters(l layout) string {
 			m.accent(fmt.Sprint(files)), m.accent(fmt.Sprint(findings)), m.accent(fmt.Sprint(m.stats.selected)), m.dim(fmt.Sprint(issues))), l.width)
 	}
 	labels := []string{"已扫描文件", "识别命中", "已选择脱敏", "问题 / 跳过"}
+	if m.options.Replacement != nil {
+		labels[1], labels[2] = "查找命中", "已选择替换"
+	}
 	values := []string{fmt.Sprint(files), fmt.Sprint(findings), fmt.Sprintf("%d / %d", m.stats.selected, findings), fmt.Sprintf("%d / %d", issues, m.stats.skipped)}
 	width := (l.width - 3) / 4
 	var cards []string
@@ -96,6 +105,9 @@ func (m Model) counters(l layout) string {
 }
 
 func (m Model) toolbar(w int) string {
+	if m.options.Replacement != nil {
+		return aligned(m.pill("自定义替换")+" "+m.dim(m.replacementSummary()), m.dim("c 编辑 · Ctrl+D 脱敏"), w)
+	}
 	rule := "全部规则"
 	if m.ruleFilter != "" {
 		rule = safeText(m.ruleFilter)
@@ -104,7 +116,7 @@ func (m Model) toolbar(w int) string {
 	if m.filter != "" {
 		search = " / " + safeText(m.filter)
 	}
-	return aligned(m.pill("[ "+rule+" ]")+" "+m.dim(search), m.dim(m.phase()+"  ·  ? 帮助"), w)
+	return aligned(m.pill("[ "+rule+" ]")+" "+m.dim(search), m.dim("c 自定义替换 · ? 帮助"), w)
 }
 
 func (m Model) filePanel(w, h int) string {
@@ -183,6 +195,9 @@ func (m Model) findingPanel(w, h int) string {
 	if len(m.rows) == 0 {
 		if m.stats.findings == 0 {
 			lines = append(lines, m.accent("✓ 当前范围没有识别命中"), m.dim("可在文件面板查看内容，o 更换路径"))
+			if m.options.Replacement != nil {
+				lines[len(lines)-2] = m.accent("未找到匹配文本 · c 编辑查找条件")
+			}
 		} else {
 			lines = append(lines, m.dim("没有匹配项 · Esc 清除筛选"))
 		}
@@ -257,6 +272,9 @@ func (m Model) footer(w int) string {
 	line1 := lipgloss.NewStyle().Foreground(color).Render(clipped(status, w))
 	line2 := m.help.ShortHelpView(shortKeys)
 	line3 := m.dim("预览隐藏全部命中；写入仅替换已选项。")
+	if m.options.Replacement != nil {
+		line3 = m.dim("预览展示全部替换候选并隐藏隐私；仅已选替换写入。")
+	}
 	return line1 + "\n" + clipped(line2, w) + "\n" + clipped(line3, w)
 }
 
@@ -265,15 +283,26 @@ func (m Model) modal() string {
 	inner := max(1, w-4)
 	var lines []string
 	switch {
+	case m.replaceForm:
+		return m.replaceDialog(w)
 	case m.inputMode != "":
 		title, description := "搜索", "实时筛选文件路径或规则 ID"
 		if m.inputMode == "root" {
 			title, description = "打开扫描路径", "输入本地文件或目录；确认后开始新的扫描"
 		}
 		if m.inputMode == "output" {
-			title, description = "设置导出目录", "输入尚不存在的目录，用于保存脱敏副本"
+			title, description = "设置导出目录", "输入尚不存在的目录，用于保存处理后的副本"
 		}
 		lines = []string{m.accent(title), m.dim(description), "", m.input.View(), "", m.dim("Enter 确定  ·  Esc 取消  ·  ←→ 编辑")}
+		if m.inputMode == "output" {
+			lines[4] = m.dim("←→ / Home / End 定位 · Backspace 删除")
+			if m.confirm {
+				lines[5] = m.dim("Enter 更新并返回确认 · Esc 保留原目录")
+			}
+		}
+		if m.inputError != "" {
+			lines[4] = m.accent(m.inputError)
+		}
 		if m.inputMode == "filter" {
 			lines = append(lines, m.dim(fmt.Sprintf("%d 个文件 · %d 项命中匹配", len(m.files), len(m.rows))))
 		}
@@ -282,15 +311,28 @@ func (m Model) modal() string {
 		if m.write.InPlace {
 			title = "确认原地脱敏"
 		}
+		if m.options.Replacement != nil {
+			title = "确认自定义替换"
+		}
 		lines = []string{m.accent(title)}
 		lines = append(lines, strings.Split(m.confirmation.View(), "\n")...)
 		cancel, execute := m.dim(" 取消 "), m.dim(" 执行脱敏 ")
+		if m.options.Replacement != nil {
+			execute = m.dim(" 执行替换 ")
+		}
 		if m.confirmWrite {
 			execute = m.pill("执行脱敏")
+			if m.options.Replacement != nil {
+				execute = m.pill("执行替换")
+			}
 		} else {
 			cancel = m.pill("取消")
 		}
-		lines = append(lines, cancel+"  "+execute, m.dim("↑↓ 滚动 · Tab 切换 · y 执行 · Esc 返回"))
+		actions := cancel + "  " + execute
+		if !m.write.InPlace {
+			actions += "  " + m.dim("d 修改目录")
+		}
+		lines = append(lines, actions, m.dim("↑↓ 滚动 · Tab 切换 · y 执行 · Esc 返回"))
 	case m.showHelp:
 		lines = []string{m.accent("键盘操作"), m.dim("文件 → 命中 → 安全预览 → 确认写入"), "",
 			m.ink("Tab / Shift+Tab") + "  切换面板",
@@ -302,6 +344,7 @@ func (m Model) modal() string {
 			m.ink("o / d / r") + "  扫描路径 / 导出目录 / 重扫",
 			m.ink("w / e") + "  确认写入 / 结果与诊断",
 			m.ink("? / Esc / q") + "  关闭帮助"}
+		lines[2] = m.ink("c / Ctrl+D") + "  自定义替换 / 隐私脱敏"
 		if m.width < 70 {
 			lines[5] = m.ink("Space / a") + "  切换项 / 当前范围"
 			lines[6] = m.ink("/ · [ / ] · Esc") + "  搜索 / 规则 / 清除"

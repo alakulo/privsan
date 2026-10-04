@@ -67,6 +67,7 @@ type Model struct {
 	rules                                                 []string
 	stats                                                 totals
 	inputMode, savedFilter                                string
+	inputError                                            string
 	input                                                 textinput.Model
 	confirm, confirmWrite, showErrors, showHelp, quitting bool
 	preview, details                                      viewport.Model
@@ -77,6 +78,11 @@ type Model struct {
 	bar                                                   progress.Model
 	help                                                  help.Model
 	theme                                                 theme
+	replaceForm                                           bool
+	replaceInputs                                         [2]textinput.Model
+	replaceFocus                                          int
+	replaceRegex, replaceIgnoreCase, replaceAll           bool
+	replacePath, replaceError                             string
 }
 
 func New(ctx context.Context, svc workflow.Service, opts scan.Options, w workflow.WriteOptions) Model {
@@ -88,6 +94,12 @@ func New(ctx context.Context, svc workflow.Service, opts scan.Options, w workflo
 	m.input.CharLimit = 1024
 	m.input.Prompt = "› "
 	m.input.SetVirtualCursor(true)
+	for i := range m.replaceInputs {
+		m.replaceInputs[i] = textinput.New()
+		m.replaceInputs[i].CharLimit = 4096
+		m.replaceInputs[i].Prompt = "› "
+		m.replaceInputs[i].SetVirtualCursor(true)
+	}
 	m.preview.SoftWrap = false
 	m.details.SoftWrap = true
 	m.confirmation.SoftWrap = true
@@ -133,6 +145,7 @@ func (m Model) start() (tea.Model, tea.Cmd) {
 	m.previewFile, m.previewHit = -1, -1
 	m.preview.SetContent("")
 	m.showErrors, m.confirm, m.showHelp = false, false, false
+	m.replaceForm = false
 	m.progress = scan.Progress{}
 	m.operation = model.Operation{}
 	events := make(chan scan.Progress, 8)
@@ -146,6 +159,21 @@ func (m Model) start() (tea.Model, tea.Cmd) {
 			default:
 			}
 		})
+		// Prepare privacy masks in the command, not on the UI update goroutine.
+		// Replacement results may create new sensitive values across boundaries.
+		if opts.Replacement != nil {
+			for i := range result.Files {
+				if ctx.Err() != nil {
+					result.Files[i].PreviewBlocked = true
+					continue
+				}
+				prepareReplacementPreview(ctx, &result.Files[i], svc.Policy)
+			}
+			if ctx.Err() != nil && result.Complete {
+				result.Complete = false
+				result.Issues = append(result.Issues, model.Error("E_CANCELLED", "", "replacement preview cancelled"))
+			}
+		}
 		return scanDone{result}
 	}, listen(events), m.spinner.Tick)
 }
@@ -260,11 +288,32 @@ func PreviewLine(f model.File, index int) string {
 		return "[invalid preview]"
 	}
 	offset := redactedOffset(f, index)
+	if f.PreviewBlocked {
+		return "[privacy preview unavailable]"
+	}
+	if len(f.PreviewMasks) > 0 {
+		delta := 0
+		for _, mask := range f.PreviewMasks {
+			if mask.End <= offset {
+				delta += len(mask.Replacement) - (mask.End - mask.Start)
+			} else {
+				if mask.Start < offset {
+					offset = mask.Start
+				}
+				break
+			}
+		}
+		offset += delta
+		data, err = model.Render(data, f.PreviewMasks, true)
+		if err != nil {
+			return "[invalid preview]"
+		}
+	}
 	if offset < 0 || offset > len(data) {
 		return "[invalid preview]"
 	}
-	start := strings.LastIndex(string(data[:offset]), "\n") + 1
-	end := strings.Index(string(data[offset:]), "\n")
+	start := bytes.LastIndexByte(data[:offset], '\n') + 1
+	end := bytes.IndexByte(data[offset:], '\n')
 	if end < 0 {
 		end = len(data)
 	} else {
@@ -290,16 +339,37 @@ func (m *Model) syncPreview() {
 	}
 	f := m.snapshot.Files[file]
 	if file != m.previewFile {
+		if f.PreviewBlocked {
+			m.preview.SetContent("[安全预览不可用：隐私检查失败，原文已隐藏]")
+			m.previewFile, m.previewHit = file, hit
+			return
+		}
 		data, err := model.Render(f.Data, f.Findings, true)
 		if err != nil {
 			m.preview.SetContent("[invalid preview]")
 			return
 		}
+		if len(f.PreviewMasks) > 0 {
+			data, err = model.Render(data, f.PreviewMasks, true)
+			if err != nil {
+				m.preview.SetContent("[invalid preview]")
+				return
+			}
+		}
 		lines := strings.Split(string(data), "\n")
 		m.previewTargets = make([]int, len(f.Findings))
-		delta, previous, line := 0, 0, 0
+		delta, previous, line, maskIndex, maskDelta := 0, 0, 0, 0, 0
 		for i, hit := range f.Findings {
 			offset := hit.Start + delta
+			for maskIndex < len(f.PreviewMasks) && f.PreviewMasks[maskIndex].End <= offset {
+				mask := f.PreviewMasks[maskIndex]
+				maskDelta += len(mask.Replacement) - (mask.End - mask.Start)
+				maskIndex++
+			}
+			if maskIndex < len(f.PreviewMasks) && f.PreviewMasks[maskIndex].Start < offset {
+				offset = f.PreviewMasks[maskIndex].Start
+			}
+			offset += maskDelta
 			if offset < previous || offset > len(data) {
 				m.preview.SetContent("[invalid preview]")
 				return

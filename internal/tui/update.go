@@ -89,6 +89,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if m.inputMode != "" {
 			return m.updateInput(msg)
 		}
+		if m.replaceForm {
+			return m.updateReplace(msg)
+		}
 		if m.confirm {
 			return m.updateConfirm(msg)
 		}
@@ -113,6 +116,12 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		switch k {
+		case "c":
+			return m.beginReplace()
+		case "ctrl+d":
+			m.options.Replacement, m.options.ReplacePath = nil, ""
+			m.filter, m.ruleFilter = "", ""
+			return m.start()
 		case "q":
 			return m, tea.Quit
 		case "?":
@@ -200,6 +209,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	if m.inputMode != "" {
 		return m.updateInput(msg)
 	}
+	if m.replaceForm {
+		return m.updateReplace(msg)
+	}
 	return m, nil
 }
 
@@ -273,6 +285,7 @@ func (m *Model) toggleFile() {
 
 func (m Model) beginInput(mode, value string) (tea.Model, tea.Cmd) {
 	m.inputMode = mode
+	m.inputError = ""
 	m.savedFilter = m.filter
 	m.input.SetValue(value)
 	m.input.CursorEnd()
@@ -303,6 +316,7 @@ func (m Model) updateInput(msg tea.Msg) (tea.Model, tea.Cmd) {
 			mode, value := m.inputMode, cleanInput(m.input.Value())
 			if mode != "filter" && strings.TrimSpace(value) == "" {
 				m.status = "路径不能为空 · 输入路径或 Esc 取消"
+				m.inputError = "路径不能为空 · 输入路径或 Esc 取消"
 				return m, nil
 			}
 			m.inputMode = ""
@@ -314,16 +328,23 @@ func (m Model) updateInput(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.rebuild()
 			case "root":
 				m.options.Root, m.filter, m.ruleFilter = value, "", ""
+				m.options.ReplacePath = ""
 				return m.start()
 			case "output":
 				m.write.Output, m.write.InPlace, m.write.BackupDir = value, false, ""
 				m.status = "导出目录已设置 · 按 w 审阅确认"
+				if m.confirm {
+					m.confirmWrite = false
+					m.prepareConfirmation()
+					m.status = "导出目录已更新 · 请重新审阅并确认"
+				}
 			}
 			return m, nil
 		}
 	}
 	var cmd tea.Cmd
 	m.input, cmd = m.input.Update(msg)
+	m.inputError = ""
 	if value := cleanInput(m.input.Value()); value != m.input.Value() {
 		m.input.SetValue(value)
 	}
@@ -343,6 +364,9 @@ func (m *Model) prepareConfirmation() {
 		"扫描路径: " + safeText(m.options.Root),
 		"",
 	}
+	if m.options.Replacement != nil {
+		lines = append([]string{"模式: 自定义替换（仅替换已选项，不自动脱敏）", m.replacementSummary(), "安全预览中的隐私掩码不写入文件。", ""}, lines...)
+	}
 	if m.write.InPlace {
 		lines = append(lines, "强制备份目录:", safeText(m.write.BackupDir), "", "校验源文件后创建备份，再修改原文件。")
 	} else {
@@ -355,6 +379,11 @@ func (m *Model) prepareConfirmation() {
 func (m Model) updateConfirm(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	k := msg.String()
 	switch k {
+	case "d":
+		if !m.write.InPlace {
+			m.confirmWrite = false
+			return m.beginInput("output", m.write.Output)
+		}
 	case "tab", "shift+tab", "left", "right":
 		m.confirmWrite = !m.confirmWrite
 	case "esc", "n", "q":

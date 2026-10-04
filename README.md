@@ -4,7 +4,7 @@
 
 ### Keep sensitive data local. Share only what you choose.
 
-An offline CLI and terminal UI for scanning and redacting sensitive data in local files.
+An offline CLI and terminal UI for sensitive-data redaction and custom text replacement in local files.
 
 [![License](https://img.shields.io/badge/license-MIT-2563EB?style=flat-square)](LICENSE)
 [![Go](https://img.shields.io/badge/Go-1.26.5%2B-00ADD8?style=flat-square&logo=go&logoColor=white)](go.mod)
@@ -38,6 +38,7 @@ contact=[EMAIL]           phone=[PHONE]     source=[IP]
 - **Review interactively.** Select findings, filter by file or rule, and inspect redacted line previews.
 - **Choose your workflow.** Export a new directory or edit in place with verified backups and recovery.
 - **Integrate with agents.** JSON, JSONL and stdin/stdout fit local automation. Incomplete scans withhold content.
+- **Replace your own text.** Literal find/replace, optional regex and case-insensitive search, with the same preview and backup workflow.
 - **Bring your rules.** Add RE2 patterns, disable built-ins, or use fixed masks and stable HMAC pseudonyms.
 
 ## Quick start
@@ -86,7 +87,7 @@ Directories are scanned recursively. No command means `scan`; no path means the 
 ./privsan tui ./documents
 ```
 
-![Privsan terminal review workspace](images/ui.png)
+![Privsan TUI walkthrough](images/tui.gif)
 
 | Key | Action |
 |:---|:---|
@@ -97,10 +98,19 @@ Directories are scanned recursively. No command means `scan`; no path means the 
 | `a` | Select or deselect all findings in the current scope |
 | `←` / `→`, `h` / `l` | Scroll the focused preview horizontally |
 | `o` / `d` | Set the input path / export directory |
+| `f` / `Enter` | Focus files / review the selected file's findings |
+| `c` / `Ctrl+D` | Custom find/replace form / return to privacy redaction |
 | `w` | Review and confirm the write operation |
 | `e` / `?` / `q` | View results and diagnostics / help / quit |
 
 The workspace shows file navigation, finding selection, a scrollable sanitized preview and scan statistics. It adapts to smaller terminals and light or dark backgrounds. Previews mask **all detected values**, including deselected findings. Selection controls what is actually replaced.
+
+Press `w` to review the write summary. Confirmation defaults to **Cancel**;
+`Tab` switches the action, `Enter` activates it, and `y` executes explicitly.
+If the export path is wrong, press **`d` inside the confirmation window** to
+edit it with arrows, `Home` / `End` and `Backspace`. `Enter` updates the directory
+and returns to the refreshed summary; `Esc` keeps the original directory.
+Both return with Cancel selected. Dry-run mode never writes.
 
 The minimum terminal size is 48 columns × 15 rows; 120 × 30 or larger is recommended. See the [TUI guide](docs/TUI.md) for scope selection, confirmation and cancellation.
 
@@ -127,6 +137,46 @@ In-place changes require a backup directory outside the input root. Privsan veri
 
 > [!NOTE]
 > Backups contain the original plaintext. Keep them in a protected directory. Writes are committed per file, not as an atomic whole-directory transaction.
+
+### 5. Replace your own text
+
+```sh
+./privsan replace --find 'old project' --with 'new project' --dry-run ./documents
+./privsan replace --find 'old project' --with 'new project' --output ../replaced-copy ./documents
+
+# Optional regex and case-insensitive search.
+./privsan replace --find 'build-[0-9]+' --with 'build-current' --regex --ignore-case --dry-run ./documents
+
+# Delete matching text with an explicit empty replacement.
+./privsan replace --find 'temporary note' --with= --dry-run ./notes.txt
+```
+
+In the TUI, select a file with `f` and press `c` to replace within that file, or
+open the form from the all-files scope for batch replacement. Fill in **find /
+replace with**, then submit with `Enter`, select matches with `Space`, set a new
+export directory with `d`, and review the write with `w`. `Esc` cancels the form.
+
+| Form key | Action |
+|:---|:---|
+| `Tab` / `Shift+Tab` | Switch between find and replacement fields |
+| `Ctrl+S` | Switch current-file / all-file scope when a file is available |
+| `Ctrl+R` | Toggle literal / Go regular expression search |
+| `Ctrl+G` | Toggle case-sensitive / Unicode case-insensitive search |
+| `Enter` / `Esc` | Generate a preview / cancel the draft |
+
+`Ctrl+D` on the main screen returns to privacy redaction. New plans reset
+matches and selections. Search is literal and case-sensitive by default;
+replacement text is always literal, including `$1` and `\n`. An empty replacement
+deletes matches. The TUI accepts single-line input; use the CLI for actual
+newlines or tabs. The default **16 MiB per file / 128 MiB per batch** budgets also
+bound replacement expansion.
+
+**Custom replacement does not automatically redact sensitive data.** Its TUI
+preview shows all replacement candidates and masks identified privacy for review;
+output applies only selected custom replacements. Preview privacy masks are not
+written to files, and `replace --content` / `--stdout` may retain sensitive data.
+Use `scan` / `redact` for agent privacy workflows.
+[Replacement reference →](docs/CLI.md#custom-find-and-replace)
 
 ## AI agent integration
 
@@ -161,7 +211,7 @@ Use `--jsonl` for file records followed by a final summary. Consumers must verif
 | Chinese ID numbers | 18-character candidates; optional date and checksum validation | `[ID]` |
 | IP addresses | Validated IPv4 and IPv6, including IPv6 zone suffixes | `[IP]` |
 
-CSV is processed as text. Matches crossing structural delimiters, quotes or line endings are rejected. International phone numbers, Unicode/quoted email addresses, Office documents, PDFs and image recognition are outside the current scope.
+CSV is processed as text. Matches crossing structural delimiters, quotes or line endings are rejected. Custom replacements also cannot insert commas, semicolons, quotes or line endings into CSV. International phone numbers, Unicode/quoted email addresses, Office documents, PDFs and image recognition are outside the current scope.
 
 ## Configuration
 
@@ -190,7 +240,7 @@ See the [example policy](privsan.example.json), [configuration reference](docs/C
 
 ## Privacy model
 
-Privsan's runtime does not upload documents, collect telemetry, fetch remote policies or require online activation. Original matched values are excluded from reports and terminal previews.
+Privsan's runtime does not upload documents, collect telemetry, fetch remote policies or require online activation. Metadata reports omit matched source snippets and custom search queries. Terminal content previews mask detected privacy; custom replacement output follows the separate contract above.
 
 Unrecognized content, filenames and paths may still contain sensitive information. Redaction does not guarantee anonymization or compliance. Source directories should remain stationary while scanning or writing; backups are unencrypted. Read [SECURITY.md](SECURITY.md) for the full boundary.
 

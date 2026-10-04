@@ -17,17 +17,24 @@ import (
 	"privsan/internal/fsutil"
 	"privsan/internal/model"
 	"privsan/internal/policy"
+	"privsan/internal/replace"
 )
 
 type Options struct {
 	Root             string
 	Include, Exclude []string
 	NoIgnore         bool
+	Replacement      *replace.Plan
+	// ReplacePath is a root-relative file, or empty for all scanned files.
+	ReplacePath string
 }
 type Progress struct{ Completed, Total, Findings int }
 
 func Run(ctx context.Context, opts Options, p *policy.Policy, progress func(Progress)) model.Snapshot {
 	s := model.Snapshot{Files: []model.File{}, Issues: []model.Issue{}, Skipped: map[string]int{}, PolicyID: p.ID}
+	if opts.Replacement != nil {
+		s.PolicyID = "replace-v1"
+	}
 	fail := func(code, path, msg string) { s.Issues = append(s.Issues, model.Error(code, path, msg)) }
 	if opts.Root == "" {
 		opts.Root = "."
@@ -223,11 +230,16 @@ func Run(ctx context.Context, opts Options, p *policy.Policy, progress func(Prog
 					} else if !utf8.Valid(data) || bytes.IndexByte(data, 0) >= 0 {
 						set("E_ENCODING", "input must be UTF-8 text without NUL")
 					} else {
-						hits, e := detect.Find(ctx, data, p, p.Config.Limits.MaxFindings)
+						var hits []model.Finding
+						if opts.Replacement == nil {
+							hits, e = detect.Find(ctx, data, p, p.Config.Limits.MaxFindings)
+						} else if opts.ReplacePath == "" || opts.ReplacePath == it.path {
+							hits, e = opts.Replacement.Find(ctx, data, p.Config.Limits.MaxFindings, p.Config.Limits.MaxFile)
+						}
 						if e != nil {
 							code := "E_RULE"
 							msg := "rule evaluation failed"
-							if errors.Is(e, detect.ErrLimit) {
+							if errors.Is(e, detect.ErrLimit) || errors.Is(e, replace.ErrLimit) {
 								code = "E_LIMIT"
 								msg = "finding or candidate limit exceeded"
 							}
@@ -236,7 +248,7 @@ func Run(ctx context.Context, opts Options, p *policy.Policy, progress func(Prog
 								msg = "scan cancelled"
 							}
 							set(code, msg)
-						} else if strings.EqualFold(filepath.Ext(it.path), ".csv") && !detect.CSVSafe(data, hits) {
+						} else if strings.EqualFold(filepath.Ext(it.path), ".csv") && (!detect.CSVSafe(data, hits) || opts.Replacement != nil && !replacementCSVSafe(hits)) {
 							set("E_CSV", "rule match crosses CSV structural characters")
 						} else {
 							res.file = model.File{Path: it.path, Data: data, Digest: model.Hash(data), Info: st, Findings: hits}
@@ -267,12 +279,22 @@ func Run(ctx context.Context, opts Options, p *policy.Policy, progress func(Prog
 			progress(Progress{completed, len(items), findings})
 		}
 	}
+	var outputBudget int64
 	for _, r := range results {
 		if r.issue != nil {
 			s.Issues = append(s.Issues, *r.issue)
 		} else {
 			s.Files = append(s.Files, r.file)
+			outputBudget += int64(len(r.file.Data))
+			if opts.Replacement != nil {
+				for _, h := range r.file.Findings {
+					outputBudget += int64(max(0, len(h.Replacement)-(h.End-h.Start)))
+				}
+			}
 		}
+	}
+	if opts.Replacement != nil && outputBudget > p.Config.Limits.MaxTotal {
+		fail("E_LIMIT", "", "total replacement output budget exceeded")
 	}
 	if findings > p.Config.Limits.MaxFindings {
 		fail("E_LIMIT", "", "total finding limit exceeded")
@@ -282,6 +304,15 @@ func Run(ctx context.Context, opts Options, p *policy.Policy, progress func(Prog
 	}
 	s.Complete = len(s.Issues) == 0
 	return s
+}
+
+func replacementCSVSafe(hits []model.Finding) bool {
+	for _, h := range hits {
+		if strings.ContainsAny(h.Replacement, ",;\"\r\n") {
+			return false
+		}
+	}
+	return true
 }
 
 var errWalkLimit = errors.New("directory enumeration limit")
