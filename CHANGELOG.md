@@ -10,6 +10,7 @@
   confirmation controls, and result/diagnostic views.
 - Cached sanitized previews and isolated progress messages between scans.
 - Kept dry-run, incomplete-scan, cancellation and backup guarantees intact.
+- Updated the pinned govulncheck release to support the Go 1.27 AST.
 
 ## 1.0.0-rc.1
 

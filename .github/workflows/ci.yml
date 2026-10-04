@@ -52,7 +52,8 @@ jobs:
       - uses: actions/setup-go@v5
         with:
           go-version: '1.27.1'
-      - run: go run golang.org/x/vuln/cmd/govulncheck@v1.1.4 ./...
+      - name: Scan for known Go vulnerabilities
+        run: go run golang.org/x/vuln/cmd/govulncheck@v1.8.0 ./...
       - run: go test ./internal/detect -run=^$ -fuzz=FuzzFind -fuzztime=20s
   packages:
     runs-on: ubuntu-latest
