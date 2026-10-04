@@ -88,15 +88,19 @@ Directories are scanned recursively. No command means `scan`; no path means the 
 
 | Key | Action |
 |:---|:---|
-| `↑` / `↓`, `j` / `k` | Move between findings |
-| `Space` | Toggle a finding |
-| `/` | Filter by file path or rule |
-| `a` | Select or deselect all visible findings |
+| `Tab` / `Shift+Tab` | Switch between files, findings and preview |
+| `↑` / `↓`, `j` / `k`, `PgUp` / `PgDn` | Navigate the focused pane |
+| `Space` | Toggle a finding or the current file's filtered findings |
+| `/`, `[` / `]`, `Esc` | Live search, cycle rules, clear filters |
+| `a` | Select or deselect all findings in the current scope |
+| `←` / `→`, `h` / `l` | Scroll the focused preview horizontally |
 | `o` / `d` | Set the input path / export directory |
 | `w` | Review and confirm the write operation |
-| `e` / `q` | View errors / quit |
+| `e` / `?` / `q` | View results and diagnostics / help / quit |
 
-Previews mask **all detected values**, including deselected findings. Selection controls what is actually replaced. The minimum terminal size is 48 columns × 15 rows.
+The workspace shows file navigation, finding selection, a scrollable sanitized preview and scan statistics. It adapts to smaller terminals and light or dark backgrounds. Previews mask **all detected values**, including deselected findings. Selection controls what is actually replaced.
+
+The minimum terminal size is 48 columns × 15 rows; 120 × 30 or larger is recommended. See the [TUI guide](docs/TUI.md) for scope selection, confirmation and cancellation.
 
 ### 3. Export sanitized copies
 

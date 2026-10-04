@@ -1,5 +1,16 @@
 # Changelog
 
+## Unreleased
+
+- Redesigned the TUI as a responsive workspace with file navigation, finding
+  selection, scan counters and a scrollable fully sanitized preview.
+- Added pane focus, combined live search and rule filters, file-scoped selection,
+  light/dark palettes, progress feedback and keyboard help.
+- Added scrollable write summaries with a default cancel action, persistent
+  confirmation controls, and result/diagnostic views.
+- Cached sanitized previews and isolated progress messages between scans.
+- Kept dry-run, incomplete-scan, cancellation and backup guarantees intact.
+
 ## 1.0.0-rc.1
 
 Initial public release candidate.
